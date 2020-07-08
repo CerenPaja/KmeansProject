@@ -1,0 +1,331 @@
+%% 1) read in Ilastik file (for RGB file /membrane and nucleus)
+
+addpath(genpath('E:\Ceren\Private\ilastik change test\Combined_New\7som_e1-upR-2'));
+ilastik_filename = '191007_7som_647Ecad_488BcatNcad_e1-upR-2_Probabilities.h5';
+ilastik_file = h5read(ilastik_filename,'/exported_data/');
+pred = squeeze(ilastik_file(2,:,:,:));                                       
+pred = permute(pred,[2,1,3]);          
+
+figure
+imshow(sum(pred,3),[])
+title('Ilastik prediction map, z-projection')
+%% 2) read in the original image
+imagename_original = 'RGB.tif';
+original_img = 0*pred;                                    
+for z = 1 : size(pred,3)                                         
+    temp = imread(imagename_original,z);        
+    original_img(:,:,z) = temp(:,:,1);  
+end                                                                                       
+figure
+imshow(sum(original_img,3),[])
+title('original image, z-proj.')
+
+%% Important input file:
+
+%drag the Label2_WatershedMatrix.mat file (for this particular sample) into command line
+
+
+%% Scale image dimensions script
+
+AimedMag  = 0.1135; % pixel size in microns used to analyse the data;
+
+nChan    = 6; % number of channels used
+hybnum   = 1; %remember to change here !!
+somite   = 7; %number of somites for the embryo
+sample   = 'e1-upR-2';
+scope    = 'dragonfly';%'olympus';
+imageName_allDots = '190917_7som_hyb1_e1-upR-2.ome.tif';
+scaleFactorX      = 1; % or AimedMag/dx;
+scaleFactorZ      = 1;
+
+% settings of the two different types of images. These values might need to
+% be changed, depending on the acquisition used.
+if strcmp(scope,'dragonfly')
+    mag = 63;
+    pixelSize = 0.184;     % in microns;
+    dx  = pixelSize/mag;
+    dz  = 0.356;           % in microns
+elseif strcmp(scope,'olympus')
+    mag = 100;
+    pixelSize = 13;   % in microns
+    dx  = pixelSize/mag;
+    dz  = .5;           % in microns 
+end
+
+stackSize = (length(imfinfo(imageName_allDots)))/nChan;
+im_dots   = cell(1,nChan); % pre-allocating
+for c = 1:nChan
+    for z = 1:stackSize       
+        if c < 6
+            im_dots{c}(:,:,z) = (double(imread(imageName_allDots,c+(z-1)*nChan)));
+        else
+            im_dots{c}(:,:,z) = double(imread(imageName_allDots,c+(z-1)*nChan));
+        end
+    end
+end
+
+% scale the image to the Aimed PixelSize;
+im_dots_scaled = cell(size(im_dots));
+[X,Y] = meshgrid(1:scaleFactorX:size(im_dots{1},1),1:scaleFactorX:size(im_dots{1},2));
+newNSlices = round(size(im_dots{1},3)/scaleFactorZ);
+for c = 1 : nChan
+    im_dots_scaled{c} = imresize(im_dots{c},1/scaleFactorX);
+    scaled = imresize(permute(im_dots_scaled{c},[3,1,2]),[newNSlices,size(permute(im_dots_scaled{c},[3,1,2]),2)]);
+    im_dots_scaled{c} = ipermute(scaled,[3,1,2]);
+end
+
+%%  Read the image with the nucleus and the membrane (unbinned) this is RGB.
+
+imagename_RGB = 'RGB.tif';            % write there the RGB image name
+RGB_StackSize = size(original_img,3); 
+im_RGB = cell(1,2);                   % pre-allocating, as usual
+for z = 1 : RGB_StackSize
+    temp = imread(imagename_RGB,z);
+    im_RGB{1}(:,:,z) = temp(:,:,1);   
+end
+%% Manual rotation from im_dots_scaled into im_RGB frame of reference
+
+chan  = 4;
+angle = 0; 
+im_dots_rot = imrotate(im_dots_scaled{chan},angle,'crop');
+
+[shift,image1,image2] = xcorr3fft(2*im_RGB{1}(:,:,:),uint8(255*mat2gray(im_dots_rot)));
+
+%% takes image2, and shifts it according to shift. 
+close all; 
+
+image2_shift = 0*image2; % pre-allocating
+if shift(1)<0 && shift(2)>0
+    image2_shift(-shift(1)+(1:(size(image2,1)+shift(1))),shift(2)+(1:size(image2,2)-shift(2)),:) = ...
+        image2(1:(size(image2,1)+shift(1)),1:size(image2,2)-shift(2),:);
+elseif shift(1)>0 && shift(2)<0
+    image2_shift((1:size(image2,1)-shift(1)),1:size(image2,2)+shift(2),:) = ...
+        image2((shift(1)+1):size(image2,1),-shift(2)+(1:size(image2,2)+shift(2)),:);
+elseif shift(1)<=0 && shift(2)<=0
+    image2_shift(-shift(1)+(1:size(image2,1)+shift(1)),1:size(image2,2)+shift(2),:) = ...
+        image2((1:size(image2,1)+shift(1)),-shift(2)+(1:size(image2,2)+shift(2)),:);
+elseif shift(1)>=0 && shift(2)>=0
+    image2_shift((1:size(image2,1)-shift(1)),shift(2)+(1:size(image2,2)-shift(2)),:) = ...
+         image2((shift(1)+1):size(image2,1),1:size(image2,2)-shift(2),:);
+elseif shift(1) == 0 && shift(2) == 0
+    image2_shift = image2;
+end
+
+% visualize the result of the shift
+
+tmp        = zeros(size(image1,1),size(image1,2),3,'double');
+tmp(:,:,1) = double(sum(image1,3))/size(image1,3);             % (membrane) mean intensity projection
+tmp(:,:,2) = (sum(double(image2_shift)/size(image2,3),3))*30;  % green (shifted version of image2)
+tmp        = uint8(255*mat2gray(tmp));
+imshow(tmp);
+
+%type in command window -> shift = [x,y,z] in order to adjust the shift and run this section again
+%% Summarize the dots in each cell that were found using waterhed label
+
+% First segment the hotspots (dots) using ilastk.
+% Points: summarizes information about cells, such as Volume, centre of mass
+% position (centroid), Mean Intensity in the segmentation of the hotspots,
+% total intensity; To get the total number of spots multiply by volume;
+points = struct('volume',[],'centroid',[],'MeanIntensity',[],'Intensity',[],...
+    'NSpots',[],'NSpotsinVol',[],'NSpots_Cleared',[],'NSpotsinVol_Cleared',[]);
+
+%% Run this for each channel
+
+for chan = 1
+    ilastik_file_dots = h5read(sprintf('%dsom_hyb%d_%s_chan_%d_Probabilities.h5',somite,hybnum,sample,chan),'/exported_data/');
+    pred = squeeze(ilastik_file_dots(2,:,:,:));  
+    pred = permute(pred,[2,1,3]);
+    image2 = pred>0.5;                      % threshold value(can be low typically .5 or .3)
+    image2 = imrotate(image2,angle,'crop'); % rotates the segmentation 
+    
+    si1 = size(image1);
+    si2 = size(image1);
+    desiredSize = max(si1,si2);
+    padded_image = zeros(desiredSize,'uint8');
+    padded_image(1:size(image2,1),1:size(image2,2),1:size(image2,3)) = image2;
+    image2 = padded_image;
+    
+    %shift the segmentation;
+    image2_shift = 0*image2;
+    if shift(1)<0 && shift(2)>0
+        image2_shift(-shift(1)+(1:(size(image2,1)+shift(1))),shift(2)+(1:size(image2,2)-shift(2)),:) = ...
+            image2(1:(size(image2,1)+shift(1)),1:size(image2,2)-shift(2),:);
+    elseif shift(1)>0 && shift(2)<0
+        image2_shift((1:size(image2,1)-shift(1)),1:size(image2,2)+shift(2),:) = ...
+            image2((shift(1)+1):size(image2,1),-shift(2)+(1:size(image2,2)+shift(2)),:);
+    elseif shift(1)<=0 && shift(2)<=0
+        image2_shift(-shift(1)+(1:size(image2,1)+shift(1)),1:size(image2,2)+shift(2),:) = ...
+            image2((1:size(image2,1)+shift(1)),-shift(2)+(1:size(image2,2)+shift(2)),:);
+    elseif shift(1)>=0 && shift(2)>=0
+        image2_shift((1:size(image2,1)-shift(1)),shift(2)+(1:size(image2,2)-shift(2)),:) = ...
+             image2((shift(1)+1):size(image2,1),1:size(image2,2)-shift(2),:);
+    elseif shift(1) == 0 && shift(2) == 0
+        image2_shift = image2;
+    end
+    
+    tmp        = zeros(size(image1,1),size(image1,2),3,'double');
+    tmp(:,:,1) = double(sum(image1,3))/size(image1,3);
+    tmp(:,:,2) = (sum(double(mat2gray(image2_shift)*255)/size(image2,3),3))*.3;
+    tmp        = uint8(tmp);
+    figure     % visualize the shift
+    imshow(tmp);
+    
+    stats1 = regionprops(Label2(:,:,:),image2_shift,'centroid','area','MeanIntensity','PixelValues');
+
+    points(chan).volume        = cat(1,stats1.Area);
+    points(chan).centroid      = cat(1,stats1.Centroid);
+    points(chan).MeanIntensity = cat(1,stats1.MeanIntensity);
+    points(chan).Intensity     = points(chan).MeanIntensity.*points(chan).volume;
+
+    stats2 = regionprops(Label2(:,:,:),im_dots_scaled{chan},'MeanIntensity');
+    points(chan).MeanDotIntensity = cat(1,stats2.MeanIntensity);
+
+    Label_dots = bwlabeln(1-image2_shift);  % in the thresholded ilastik prediction map, which was rotated and shifted,
+    % we now look for connected groups of pixels. Each connected group gets a unique label, which we interpret as a hotspot. 
+    
+    stats1 = regionprops(Label2(:,:,:),Label_dots,'centroid','area','MeanIntensity','PixelValues'); 
+    
+    NSpots = zeros(size(stats1));     % pre-allocating
+    for z = 1 : length(stats1)
+        temp = stats1(z).PixelValues; % what labels are around in the cell k?
+        temp = unique(temp);          % extract the unique label values
+        NSpots(z) = length(temp);     % remove contribution from 0. 
+    end
+    points(chan).NSpots      = NSpots;
+    points(chan).NSpotsinVol = NSpots./cat(1,stats1.Area);
+
+    tmp   = imrotate(im_dots_scaled{chan},angle,'crop'); % rotate the original image 
+    size1 = size(image1);
+    size2 = size(image1);
+    desiredSize  = max(size1,size2);
+    padded_image = zeros(desiredSize,'uint16');
+    padded_image(1:size(image2,1),1:size(image2,2),1:size(image2,3)) = tmp;
+    tmp = padded_image;
+    
+    tmp_shift = 0*tmp; % pre-allocating
+    % shifting the two images:
+    if shift(1)<0 && shift(2)>0
+        tmp_shift(-shift(1)+(1:(size(image2,1)+shift(1))),shift(2)+(1:size(image2,2)-shift(2)),:) = ...
+            tmp(1:(size(image2,1)+shift(1)),1:size(image2,2)-shift(2),:);
+    elseif shift(1)>0 && shift(2)<0
+        tmp_shift((1:size(image2,1)-shift(1)),1:size(image2,2)+shift(2),:) = ...
+            tmp((shift(1)+1):size(image2,1),-shift(2)+(1:size(image2,2)+shift(2)),:);
+    elseif shift(1)<=0 && shift(2)<=0
+        tmp_shift(-shift(1)+(1:size(image2,1)+shift(1)),1:size(image2,2)+shift(2),:) = ...
+            tmp((1:size(image2,1)+shift(1)),-shift(2)+(1:size(image2,2)+shift(2)),:);
+    elseif shift(1)>=0 && shift(2)>=0
+        tmp_shift((1:size(image2,1)-shift(1)),shift(2)+(1:size(image2,2)-shift(2)),:) = ...
+            tmp((shift(1)+1):size(image2,1),1:size(image2,2)-shift(2),:);
+    elseif shift(1) == 0 && shift(2) == 0
+        tmp_shift = image2;
+    end
+      
+    Label_dots       = bwlabeln(1-image2_shift,6);  % update the dot label matrix
+    stats2           = regionprops(Label_dots,tmp_shift,'area','MeanIntensity','centroid','PixelValues');
+    DotVolumes       = cat(1,stats2.Area);
+    DotCentre        = cat(1,stats2.Centroid);
+    MeanDotIntensity = cat(1,stats2.MeanIntensity);
+
+    
+    [c,x] = ecdf(MeanDotIntensity);                    % normalizing MeanDotIntensity Distribution
+    %figure
+    %plot(c,x)                                          % Displays the ecdf plot
+    %title('ecdf(MeanDotIntensity) - empirical cum. distr. funct.')
+    %ylabel('mean dot intensity')
+    %xlabel('summed percentage')
+    %hold off
+            
+    most_vals = find(c>.99,1,'first');                 % take 99 percent of the distribution
+    mI = MeanDotIntensity-min(MeanDotIntensity)+eps;   % calculate the mean intensity 
+    mI = mI/x(most_vals)-eps/2;                        % normalize the mean intensity to that 99%,
+                                                       % gives the distribtion from 0 to 1+eps
+    
+    points(chan).DotVolumes = DotVolumes;
+    points(chan).MeanIntensityOfDots = MeanDotIntensity;
+    points(chan).MeanIntensityOfDotsNormalized = mI;
+
+    figure();
+    datacursormode on
+    hist(mI,500)
+    
+    % Change this (below) according to each channel you only change mI>...
+    ind = intersect(find(mI>.895),find(mI<1.5));
+    
+    points(chan).index_filter = ind;
+    figure
+    imshow(max(tmp_shift,[],3),[])               
+    hold on 
+    plot(DotCentre(:,1),DotCentre(:,2),'b.')     % All dots shown in blue
+    plot(DotCentre(ind,1),DotCentre(ind,2),'r.') % Selected dots shown in red. 
+
+    % now use the ind to determine which of the hot spots are in which cells; 
+    % to achieve this, we will remove all the labels of the label_dots matrix, that are
+    % not member of ind: Make it a label matrix again, call Label_dots2 and
+    % gets its statistics:
+    
+    Label_dots2 = bwlabeln(ismember(Label_dots, ind),6);
+    % update the stats1 to correspond the updated Label_dots2:
+    stats1 = regionprops(Label2(:,:,:),Label_dots2,'centroid','area','MeanIntensity','PixelValues');
+    
+    NSpots = zeros(size(stats1));     % pre-allocating
+    for z = 1 : length(stats1)
+        temp = stats1(z).PixelValues; % labels that are in the cell z
+        temp = unique(temp);          % extract the unique label values
+        NSpots(z) = length(temp);  
+    end
+    points(chan).NSpots_Cleared      = NSpots;
+    points(chan).NSpotsinVol_Cleared = NSpots./cat(1,stats1.Area);
+end
+
+%% Run this only after you complete running all 5 channels for that particular hyb
+
+pointssave = sprintf('hyb%d_points.mat',hybnum);  %run this after you are done with all channels for this hyb
+save(pointssave,'points');
+
+
+%% Functions
+
+function se = strel3D(shape, size)
+    % 3D version of matlabs 2d strel function
+    % Implements 'sphere' and 'cube'
+    % strel3d(shap,size)
+    % Copyright 2015 Idse Heemskerk and Sebastian Streichan    
+    N = size;
+    if strcmp(shape, 'sphere')
+        se = false([2*N+1 2*N+1 2*N+1]);
+        [X,Y,Z] = meshgrid(-N:N, -N:N, -N:N);
+        se(X.^2 + Y.^2 + Z.^2 <= N^2) = 1;
+    elseif strcmp(shape, 'cube')
+        se = true([2*N+1 2*N+1 2*N+1]);
+    else 
+        error('strel type not recognized');
+    end
+end
+function [shift,image1,image2] = xcorr3fft(image1,image2)
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %
+    %   xcorr2fft computes offsets between images image1 and image2 based
+    %   on Phase Correlation method. image1 & image2 are assumed to have
+    %   the same dimensions.   
+    %   Written by: Sebastian J Streichan, EMBL, February 29, 2012
+    %   Extended to 3D and bug corrected by: Stefan Gunther, EMBL, March, 20, 2012
+    %
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    F     = fftn(image1);
+    Fc    = conj(fftn(image2)); 
+    R     = F.*Fc;    % Phase correlation, Compute fft of image1 and conjugate fft of image2, elementwise multiply and normalise. 
+    c     = ifftn(R); % Inverse fft of Phase correlation gives cross correlation map. 
+    [~,i] = max(c(:));
+    [I,J,~] = ind2sub(size(c),i);
+    if abs(I-1)<abs(size(image1,1)-I+1)
+       shiftx = -I+1;
+    else
+       shiftx =  size(image1,1)-I+1;
+    end
+    if abs(J-1)<abs(size(image1,2)-J+1)
+        shifty = -J+1;
+    else
+        shifty = size(image1,2)-J+1;
+    end
+    shift=[shiftx,shifty,0]; 
+end
