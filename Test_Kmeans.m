@@ -1,10 +1,3 @@
-
-
-
-
-
-
-
 % simplified example - convert uint16 to double 
  
 variable = stats2(2).PixelValues;  %this is just for 2nd row
